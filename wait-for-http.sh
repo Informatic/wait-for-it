@@ -11,9 +11,8 @@ usage()
 Usage:
     $WAITFORIT_cmdname host:port [-s] [-t timeout] [-- command args]
     -h HOST | --host=HOST       Host or IP under test
-    -p PORT | --port=PORT       TCP port under test
-                                Alternatively, you specify the host and port as host:port
     -s | --strict               Only execute subcommand if the test succeeds
+    -S STATUS | --status=STATUS Expect this status code
     -q | --quiet                Don't output any status messages
     -t TIMEOUT | --timeout=TIMEOUT
                                 Timeout in seconds, zero for no timeout
@@ -25,23 +24,27 @@ USAGE
 wait_for()
 {
     if [[ $WAITFORIT_TIMEOUT -gt 0 ]]; then
-        echoerr "$WAITFORIT_cmdname: waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_HOST:$WAITFORIT_PORT"
+        echoerr "$WAITFORIT_cmdname: waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_URI"
     else
-        echoerr "$WAITFORIT_cmdname: waiting for $WAITFORIT_HOST:$WAITFORIT_PORT without a timeout"
+        echoerr "$WAITFORIT_cmdname: waiting for $WAITFORIT_URI without a timeout"
     fi
     WAITFORIT_start_ts=$(date +%s)
     while :
     do
-        if [[ $WAITFORIT_ISBUSY -eq 1 ]]; then
-            nc -z $WAITFORIT_HOST $WAITFORIT_PORT
-            WAITFORIT_result=$?
-        else
-            (echo > /dev/tcp/$WAITFORIT_HOST/$WAITFORIT_PORT) >/dev/null 2>&1
-            WAITFORIT_result=$?
-        fi
+        #if [[ $WAITFORIT_ISBUSY -eq 1 ]]; then
+        #    nc -z $WAITFORIT_URI $WAITFORIT_PORT
+        #    WAITFORIT_result=$?
+        #else
+        #    (echo > /dev/tcp/$WAITFORIT_URI/$WAITFORIT_PORT) >/dev/null 2>&1
+        #    WAITFORIT_result=$?
+        #fi
+
+        [[ "$(curl -s -o /dev/null -w ''%{http_code}'' $WAITFORIT_URI)" == "$WAITFORIT_STATUS" ]]
+        WAITFORIT_result=$?
+
         if [[ $WAITFORIT_result -eq 0 ]]; then
             WAITFORIT_end_ts=$(date +%s)
-            echoerr "$WAITFORIT_cmdname: $WAITFORIT_HOST:$WAITFORIT_PORT is available after $((WAITFORIT_end_ts - WAITFORIT_start_ts)) seconds"
+            echoerr "$WAITFORIT_cmdname: $WAITFORIT_URI is available after $((WAITFORIT_end_ts - WAITFORIT_start_ts)) seconds"
             break
         fi
         sleep 1
@@ -53,16 +56,16 @@ wait_for_wrapper()
 {
     # In order to support SIGINT during timeout: http://unix.stackexchange.com/a/57692
     if [[ $WAITFORIT_QUIET -eq 1 ]]; then
-        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --quiet --child --host=$WAITFORIT_HOST --port=$WAITFORIT_PORT --timeout=$WAITFORIT_TIMEOUT &
+        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --quiet --child --host=$WAITFORIT_URI --timeout=$WAITFORIT_TIMEOUT --status=$WAITFORIT_STATUS &
     else
-        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --child --host=$WAITFORIT_HOST --port=$WAITFORIT_PORT --timeout=$WAITFORIT_TIMEOUT &
+        timeout $WAITFORIT_BUSYTIMEFLAG $WAITFORIT_TIMEOUT $0 --child --host=$WAITFORIT_URI --timeout=$WAITFORIT_TIMEOUT --status=$WAITFORIT_STATUS &
     fi
     WAITFORIT_PID=$!
     trap "kill -INT -$WAITFORIT_PID" INT
     wait $WAITFORIT_PID
     WAITFORIT_RESULT=$?
     if [[ $WAITFORIT_RESULT -ne 0 ]]; then
-        echoerr "$WAITFORIT_cmdname: timeout occurred after waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_HOST:$WAITFORIT_PORT"
+        echoerr "$WAITFORIT_cmdname: timeout occurred after waiting $WAITFORIT_TIMEOUT seconds for $WAITFORIT_URI"
     fi
     return $WAITFORIT_RESULT
 }
@@ -71,12 +74,6 @@ wait_for_wrapper()
 while [[ $# -gt 0 ]]
 do
     case "$1" in
-        *:* )
-        WAITFORIT_hostport=(${1//:/ })
-        WAITFORIT_HOST=${WAITFORIT_hostport[0]}
-        WAITFORIT_PORT=${WAITFORIT_hostport[1]}
-        shift 1
-        ;;
         --child)
         WAITFORIT_CHILD=1
         shift 1
@@ -90,21 +87,12 @@ do
         shift 1
         ;;
         -h)
-        WAITFORIT_HOST="$2"
-        if [[ $WAITFORIT_HOST == "" ]]; then break; fi
+        WAITFORIT_URI="$2"
+        if [[ $WAITFORIT_URI == "" ]]; then break; fi
         shift 2
         ;;
         --host=*)
-        WAITFORIT_HOST="${1#*=}"
-        shift 1
-        ;;
-        -p)
-        WAITFORIT_PORT="$2"
-        if [[ $WAITFORIT_PORT == "" ]]; then break; fi
-        shift 2
-        ;;
-        --port=*)
-        WAITFORIT_PORT="${1#*=}"
+        WAITFORIT_URI="${1#*=}"
         shift 1
         ;;
         -t)
@@ -116,6 +104,15 @@ do
         WAITFORIT_TIMEOUT="${1#*=}"
         shift 1
         ;;
+        -S)
+        WAITFORIT_STATUS="$2"
+        if [[ $WAITFORIT_STATUS == "" ]]; then break; fi
+        shift 2
+        ;;
+        --status=*)
+        WAITFORIT_STATUS="${1#*=}"
+        shift 1
+        ;;
         --)
         shift
         WAITFORIT_CLI=("$@")
@@ -124,6 +121,10 @@ do
         --help)
         usage
         ;;
+        *:* )
+        WAITFORIT_URI=$1
+        shift 1
+        ;;
         *)
         echoerr "Unknown argument: $1"
         usage
@@ -131,12 +132,13 @@ do
     esac
 done
 
-if [[ "$WAITFORIT_HOST" == "" || "$WAITFORIT_PORT" == "" ]]; then
+if [[ "$WAITFORIT_URI" == "" ]]; then
     echoerr "Error: you need to provide a host and port to test."
     usage
 fi
 
 WAITFORIT_TIMEOUT=${WAITFORIT_TIMEOUT:-15}
+WAITFORIT_STATUS=${WAITFORIT_STATUS:-200}
 WAITFORIT_STRICT=${WAITFORIT_STRICT:-0}
 WAITFORIT_CHILD=${WAITFORIT_CHILD:-0}
 WAITFORIT_QUIET=${WAITFORIT_QUIET:-0}
